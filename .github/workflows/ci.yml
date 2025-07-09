@@ -1,0 +1,264 @@
+name: PAGE Engine CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  BUILD_TYPE: Release
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            triplet: x64-linux
+            cc: gcc-11
+            cxx: g++-11
+          - os: windows-latest
+            triplet: x64-windows
+            cc: cl
+            cxx: cl
+          - os: macos-latest
+            triplet: x64-osx
+            cc: clang
+            cxx: clang++
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup vcpkg
+      uses: lukka/get-cmake@latest
+      
+    - name: Restore vcpkg and its artifacts
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgConfigurationFile: vcpkg.json
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          pkg-config \
+          libgl1-mesa-dev \
+          libglu1-mesa-dev \
+          libxrandr-dev \
+          libxinerama-dev \
+          libxcursor-dev \
+          libxi-dev \
+          libxext-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libasound2-dev \
+          gcc-11 \
+          g++-11
+
+    - name: Install macOS dependencies
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install cmake ninja pkg-config
+
+    - name: Setup MSVC (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Configure CMake
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DCMAKE_TOOLCHAIN_FILE=${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake \
+          -DVCPKG_TARGET_TRIPLET=${{matrix.triplet}} \
+          -DPAGE_BUILD_TESTS=ON \
+          -DPAGE_BUILD_EXAMPLES=ON
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j 4
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: page-build-${{ matrix.os }}
+        path: |
+          ${{github.workspace}}/build/bin/
+          ${{github.workspace}}/build/lib/
+        retention-days: 7
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cppcheck \
+          clang-tidy \
+          clang-format \
+          iwyu
+
+    - name: Setup vcpkg
+      uses: lukka/get-cmake@latest
+      
+    - name: Restore vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgConfigurationFile: vcpkg.json
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+
+    - name: Configure CMake for analysis
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_TOOLCHAIN_FILE=${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --inconclusive --xml --xml-version=2 \
+          --suppress=missingIncludeSystem \
+          --project=${{github.workspace}}/build/compile_commands.json \
+          2> cppcheck-report.xml
+
+    - name: Run clang-tidy
+      run: |
+        run-clang-tidy -p ${{github.workspace}}/build \
+          -header-filter='.*PAGE/.*' \
+          -checks='-*,readability-*,performance-*,modernize-*,bugprone-*' \
+          > clang-tidy-report.txt 2>&1 || true
+
+    - name: Check code formatting
+      run: |
+        find PAGE/ -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | \
+        xargs clang-format -style=file --dry-run --Werror
+
+    - name: Upload static analysis reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: static-analysis-reports
+        path: |
+          cppcheck-report.xml
+          clang-tidy-report.txt
+        retention-days: 30
+
+  code-coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          gcov \
+          lcov \
+          libgl1-mesa-dev \
+          libglu1-mesa-dev \
+          libxrandr-dev \
+          libxinerama-dev \
+          libxcursor-dev \
+          libxi-dev
+
+    - name: Setup vcpkg
+      uses: lukka/get-cmake@latest
+      
+    - name: Restore vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgConfigurationFile: vcpkg.json
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+
+    - name: Configure CMake with coverage
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_TOOLCHAIN_FILE=${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake \
+          -DPAGE_BUILD_TESTS=ON \
+          -DPAGE_ENABLE_COVERAGE=ON \
+          -DCMAKE_CXX_FLAGS="--coverage" \
+          -DCMAKE_C_FLAGS="--coverage"
+
+    - name: Build with coverage
+      run: cmake --build ${{github.workspace}}/build --config Debug -j 4
+
+    - name: Run tests with coverage
+      working-directory: ${{github.workspace}}/build
+      run: ctest -C Debug --output-on-failure
+
+    - name: Generate coverage report
+      run: |
+        lcov --directory ${{github.workspace}}/build --capture --output-file coverage.info
+        lcov --remove coverage.info '/usr/*' --output-file coverage.info
+        lcov --remove coverage.info '*/vcpkg/*' --output-file coverage.info
+        lcov --remove coverage.info '*/build/*' --output-file coverage.info
+        lcov --list coverage.info
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.info
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
