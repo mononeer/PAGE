@@ -1,0 +1,106 @@
+{
+  "name": "page-engine",
+  "version": "1.0.0",
+  "description": "Prime Advanced Game Engine - A modern, high-performance game engine",
+  "homepage": "https://github.com/mononeer/PAGE",
+  "license": "PAGE Engine License v1.0",
+  "dependencies": [
+    {
+      "name": "opengl",
+      "platform": "!osx"
+    },
+    {
+      "name": "glfw3",
+      "version>=": "3.3.8"
+    },
+    {
+      "name": "glew",
+      "version>=": "2.2.0"
+    },
+    {
+      "name": "glm",
+      "version>=": "0.9.9"
+    },
+    {
+      "name": "assimp",
+      "version>=": "5.2.0"
+    },
+    {
+      "name": "stb",
+      "version>=": "2023-01-30"
+    },
+    {
+      "name": "openal-soft",
+      "version>=": "1.22.0"
+    },
+    {
+      "name": "bullet3",
+      "version>=": "3.24"
+    },
+    {
+      "name": "spdlog",
+      "version>=": "1.10.0"
+    },
+    {
+      "name": "nlohmann-json",
+      "version>=": "3.11.0"
+    },
+    {
+      "name": "fmt",
+      "version>=": "9.1.0"
+    },
+    {
+      "name": "imgui",
+      "version>=": "1.89.0",
+      "features": [
+        "opengl3-binding",
+        "glfw-binding"
+      ]
+    },
+    {
+      "name": "catch2",
+      "version>=": "3.3.0"
+    }
+  ],
+  "features": {
+    "vulkan": {
+      "description": "Enable Vulkan rendering backend",
+      "dependencies": [
+        {
+          "name": "vulkan",
+          "host": true
+        },
+        {
+          "name": "vulkan-headers"
+        }
+      ]
+    },
+    "tools": {
+      "description": "Build development tools",
+      "dependencies": [
+        {
+          "name": "tinyfiledialogs"
+        }
+      ]
+    },
+    "examples": {
+      "description": "Build example projects",
+      "dependencies": []
+    },
+    "tests": {
+      "description": "Build unit tests",
+      "dependencies": [
+        {
+          "name": "catch2",
+          "version>=": "3.3.0"
+        }
+      ]
+    }
+  },
+  "overrides": [
+    {
+      "name": "opengl",
+      "version": "0.0.0#9"
+    }
+  ]
+}
