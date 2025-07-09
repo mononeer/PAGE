@@ -1,0 +1,309 @@
+name: PAGE Engine Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  BUILD_TYPE: Release
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.id }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get version
+      id: get_version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get previous tag
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        # Generate changelog
+        if [ -n "$PREVIOUS_TAG" ]; then
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "## Changes since $PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD | head -50 >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        else
+          echo "CHANGELOG=Initial release of PAGE Engine" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.get_version.outputs.VERSION }}
+        release_name: PAGE Engine ${{ steps.get_version.outputs.VERSION }}
+        body: |
+          # PAGE Engine ${{ steps.get_version.outputs.VERSION }}
+          
+          ${{ steps.changelog.outputs.CHANGELOG }}
+          
+          ## Download
+          
+          Choose the appropriate binary for your platform:
+          - **Windows**: `page-engine-windows-x64.zip`
+          - **Linux**: `page-engine-linux-x64.tar.gz`
+          - **macOS**: `page-engine-macos-x64.tar.gz`
+          
+          ## Installation
+          
+          1. Download the appropriate archive for your platform
+          2. Extract to your desired location
+          3. Add the `bin` directory to your PATH
+          4. Run `page-engine --version` to verify installation
+          
+          ## Documentation
+          
+          - [Getting Started Guide](https://github.com/mononeer/PAGE/wiki/Getting-Started)
+          - [API Documentation](https://mononeer.github.io/PAGE/)
+          - [Examples](https://github.com/mononeer/PAGE/tree/main/Examples)
+          
+          ## License
+          
+          This release is licensed under the PAGE Engine License v1.0.
+          See [LICENSE](LICENSE) for full terms.
+        draft: false
+        prerelease: ${{ contains(steps.get_version.outputs.VERSION, '-') }}
+
+  build-release:
+    name: Build Release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            triplet: x64-linux
+            asset_name: page-engine-linux-x64.tar.gz
+            exe_suffix: ""
+          - os: windows-latest
+            triplet: x64-windows
+            asset_name: page-engine-windows-x64.zip
+            exe_suffix: ".exe"
+          - os: macos-latest
+            triplet: x64-osx
+            asset_name: page-engine-macos-x64.tar.gz
+            exe_suffix: ""
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup vcpkg
+      uses: lukka/get-cmake@latest
+      
+    - name: Restore vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgConfigurationFile: vcpkg.json
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          pkg-config \
+          libgl1-mesa-dev \
+          libglu1-mesa-dev \
+          libxrandr-dev \
+          libxinerama-dev \
+          libxcursor-dev \
+          libxi-dev \
+          libxext-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libasound2-dev
+
+    - name: Install macOS dependencies
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install cmake ninja pkg-config
+
+    - name: Setup MSVC (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Configure CMake
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DCMAKE_TOOLCHAIN_FILE=${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake \
+          -DVCPKG_TARGET_TRIPLET=${{matrix.triplet}} \
+          -DPAGE_BUILD_TESTS=OFF \
+          -DPAGE_BUILD_EXAMPLES=ON \
+          -DPAGE_BUILD_TOOLS=ON \
+          -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j 4
+
+    - name: Install
+      run: cmake --install ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Create documentation
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get install -y doxygen graphviz
+        cd ${{github.workspace}}/build
+        make docs || true
+        if [ -d docs/html ]; then
+          cp -r docs/html ${{github.workspace}}/install/docs
+        fi
+
+    - name: Package Linux/macOS
+      if: matrix.os != 'windows-latest'
+      run: |
+        cd ${{github.workspace}}/install
+        tar -czf ${{github.workspace}}/${{ matrix.asset_name }} *
+
+    - name: Package Windows
+      if: matrix.os == 'windows-latest'
+      run: |
+        cd ${{github.workspace}}/install
+        7z a ${{github.workspace}}/${{ matrix.asset_name }} *
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ github.workspace }}/${{ matrix.asset_name }}
+        asset_name: ${{ matrix.asset_name }}
+        asset_content_type: application/octet-stream
+
+    - name: Upload debug symbols (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        cd ${{github.workspace}}/build
+        7z a ${{github.workspace}}/page-engine-windows-x64-debug.zip *.pdb
+      continue-on-error: true
+
+    - name: Upload debug symbols asset (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ github.workspace }}/page-engine-windows-x64-debug.zip
+        asset_name: page-engine-windows-x64-debug.zip
+        asset_content_type: application/octet-stream
+      continue-on-error: true
+
+  publish-docs:
+    name: Publish Documentation
+    runs-on: ubuntu-latest
+    needs: [create-release, build-release]
+    if: always() && needs.create-release.result == 'success'
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup vcpkg
+      uses: lukka/get-cmake@latest
+      
+    - name: Restore vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgConfigurationFile: vcpkg.json
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          doxygen \
+          graphviz \
+          build-essential \
+          cmake \
+          ninja-build \
+          libgl1-mesa-dev
+
+    - name: Configure CMake
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DCMAKE_TOOLCHAIN_FILE=${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake \
+          -DPAGE_BUILD_DOCS=ON
+
+    - name: Build documentation
+      run: |
+        cd ${{github.workspace}}/build
+        make docs
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      if: github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ${{github.workspace}}/build/docs/html
+        destination_dir: api
+
+  notify-release:
+    name: Notify Release
+    runs-on: ubuntu-latest
+    needs: [create-release, build-release]
+    if: always() && needs.create-release.result == 'success'
+
+    steps:
+    - name: Get release info
+      id: release_info
+      run: |
+        echo "RELEASE_URL=https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        echo "RELEASE_NAME=PAGE Engine ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+    - name: Create summary
+      run: |
+        echo "## 🎉 Release Created Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Release:** [${{ steps.release_info.outputs.RELEASE_NAME }}](${{ steps.release_info.outputs.RELEASE_URL }})" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Available Platforms:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Windows x64" >> $GITHUB_STEP_SUMMARY
+        echo "- Linux x64" >> $GITHUB_STEP_SUMMARY
+        echo "- macOS x64" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Documentation:** [API Docs](https://mononeer.github.io/PAGE/api/)" >> $GITHUB_STEP_SUMMARY
