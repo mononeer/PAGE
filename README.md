@@ -156,7 +156,13 @@ PAGE follows a modern ECS (Entity Component System) architecture:
 
 Created by **@mononeer**
 
-Currently licensed under **GPL v3** - This may change to a custom license in the future.
+Licensed under the **PAGE Engine License v1.0** - A custom license that allows free, non-commercial use only.
+
+**Key License Terms:**
+- ✅ Free for personal, educational, and non-commercial use
+- ✅ Create and distribute games for free
+- ❌ No commercial use or monetization allowed
+- ❌ Games created must remain free forever
 
 See [LICENSE](LICENSE) for full license text.
 
